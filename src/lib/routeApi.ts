@@ -1,4 +1,5 @@
 import type { DestinationResult, RouteResult } from "../state/interactionMachine";
+import { apiUrl } from "./apiBase";
 
 // Frontend client for POST /api/recommend-route (static GTFS + live SEPTA on
 // the backend). The AI is not involved here — it only supplied the destination.
@@ -12,7 +13,7 @@ export class RouteError extends Error {
 export async function recommendRoute(dest: DestinationResult, signal?: AbortSignal): Promise<RouteResult> {
   let res: Response;
   try {
-    res = await fetch("/api/recommend-route", {
+    res = await fetch(apiUrl("/api/recommend-route"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

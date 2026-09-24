@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { apiUrl } from "../lib/apiBase";
 import type { LedEvent, LedState } from "../state/ledMachine";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ export function useLedEtaRefresh(led: LedState, ledDispatch: (e: LedEvent) => vo
       const timeout = window.setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
 
       try {
-        const res = await fetch(`/api/eta?${q}`, { signal: ctrl.signal, cache: "no-store" });
+        const res = await fetch(apiUrl(`/api/eta?${q}`), { signal: ctrl.signal, cache: "no-store" });
         let body: any = null;
         try {
           body = await res.json();
