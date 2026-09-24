@@ -5,3 +5,4 @@ server/.env
 server/data/
 .env
 __pycache__/
+server/.env.save
