@@ -30,6 +30,7 @@ from pathlib import Path
 import openai
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from openai import OpenAI
 
 import gtfs_static
@@ -47,6 +48,21 @@ MAX_TRANSCRIPT_CHARS = 300
 AI_TIMEOUT_SECONDS = 20
 
 app = Flask(__name__)
+
+# CORS: only these frontend origins may call the API from a browser (no wildcard).
+#   https://az1938.github.io  — deployed GitHub Pages frontend
+#   http://localhost:5174     — local Vite dev server
+# Applies to every /api/* route (health, interpret-destination, recommend-route, eta).
+ALLOWED_ORIGINS = [
+    "https://az1938.github.io",
+    "http://localhost:5174",
+]
+CORS(
+    app,
+    resources={r"/api/*": {"origins": ALLOWED_ORIGINS}},
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 # ─── Prompt + structured output ─────────────────────────────────────────────
 
