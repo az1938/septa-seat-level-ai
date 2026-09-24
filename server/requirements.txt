@@ -3,3 +3,4 @@ openai>=1.66
 python-dotenv>=1.0
 requests>=2.31
 gtfs-realtime-bindings>=1.0
+gunicorn>=23.0
