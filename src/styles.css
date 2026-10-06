@@ -214,6 +214,116 @@ body {
 .dev-cam-error { margin: 0; color: #ff8a80; font-size: 10px; }
 .dev-mic { display: flex; flex-direction: column; gap: 4px; }
 
+/* ═══ Three synchronized pages (#/monitor · #/input · #/output) ═══════════ */
+html[data-page="input"],
+html[data-page="input"] body { background: var(--screen); overscroll-behavior: none; }
+html[data-page="output"],
+html[data-page="output"] body { background: var(--tile); overscroll-behavior: none; }
+html[data-page="monitor"],
+html[data-page="monitor"] body { background: #0d0d0c; }
+
+/* ─── /input — iPhone, portrait, full screen ─────────────────────────── */
+.page-input {
+  position: relative;
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: var(--screen);
+  padding:
+    env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+.page-input .panel-screen {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 28px 22px;
+}
+.page-input .panel-question { font-size: clamp(32px, 9.5vw, 44px); }
+.page-input .panel-caption { font-size: clamp(18px, 5vw, 22px); }
+.page-input .panel-rec-route { font-size: clamp(22px, 6vw, 26px); }
+.page-input .panel-rec-route strong { font-size: clamp(52px, 15vw, 66px); }
+.page-input .panel-rec-eta { font-size: clamp(25px, 7vw, 32px); line-height: 1.2; }
+.page-input .panel-hint { font-size: clamp(17px, 4.8vw, 21px); max-width: 24ch; }
+.page-input .panel-stack { gap: 18px; }
+.page-input .waveform { height: 92px; }
+.page-input .thinking-dots { height: 92px; }
+.page-input .thinking-dots span { width: 15px; height: 15px; }
+
+/* ─── /output — iPad: the whole screen is the LED panel ─────────────── */
+.page-output {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--tile);
+  /* only the device safe areas (notch / home indicator) — no card, no margin */
+  padding:
+    env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.led-screen {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.led-screen-panel { position: relative; }
+.led-screen-panel .led-matrix { width: 100%; height: 100%; }
+.led-screen-lit { position: absolute; inset: 0; }
+
+/* ─── /monitor — laptop, researcher only ─────────────────────────────── */
+.page-monitor {
+  min-height: 100vh;
+  padding: 20px 24px 48px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #e8e8e4;
+}
+.mon-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 14px; }
+.mon-head h1 { margin: 0; font-size: 16px; letter-spacing: 0.04em; }
+.mon-head p { margin: 4px 0 0; color: #8a8a84; }
+.mon-conn { text-align: right; line-height: 1.6; }
+.mon-conn strong { color: #ff8a80; }
+.mon-conn strong[data-on="true"] { color: var(--face); }
+.mon-alert {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #ff8a80;
+  border-radius: 8px;
+  color: #ffb3ad;
+  background: rgba(255, 90, 80, 0.08);
+}
+.mon-controls { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; margin-bottom: 16px; }
+.mon-controls > .dev-btn { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; padding: 8px 14px; text-align: left; }
+.mon-controls small { color: #8a8a84; font-size: 10px; }
+.mon-mock { flex: 0 1 auto; align-items: flex-end; }
+.mon-mock .dev-btn { flex: 0 0 auto; padding: 6px 14px; }
+.mon-action { margin: 0; align-self: center; color: #8a8a84; }
+.mon-empty { color: #8a8a84; }
+.mon-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mon-card { background: #171716; border: 1px solid #2a2a28; border-radius: 10px; padding: 12px 14px; min-width: 0; overflow-wrap: anywhere; }
+.mon-card[data-wide="true"] { grid-column: span 3; }
+.mon-card h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #8a8a84; }
+.mon-card .dev-cam-status, .mon-card .dev-cam-error { font-size: 12px; }
+@media (max-width: 1100px) {
+  .mon-grid { grid-template-columns: 1fr; }
+  .mon-card[data-wide="true"] { grid-column: auto; }
+}
+
+/* ─── / — link list ──────────────────────────────────────────────────── */
+.page-home { max-width: 560px; margin: 0 auto; padding: 64px 24px; line-height: 1.8; }
+.page-home h1 { font-size: 20px; }
+.page-home a { color: var(--ink); font-weight: 600; }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }

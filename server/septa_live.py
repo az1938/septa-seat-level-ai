@@ -3,7 +3,7 @@ Live SEPTA arrival times at the origin stop.
 
 LIVE:      GTFS-Realtime TripUpdates (protobuf, official gtfs-realtime-bindings),
            StopTimeUpdates for ORIGIN_STOP. The feed is cached for FEED_TTL_S so
-           one recommendation = one download for all candidate routes.
+           one recommendation = one download (Route 21 only).
 SCHEDULED: fallback per route when there is no live prediction — SEPTA's
            plain-text scheduled departures endpoint (/sms/<stop>/<route>),
            the same fallback Prototype 1 used. Labeled "SCHEDULED".

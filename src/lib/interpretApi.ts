@@ -6,7 +6,9 @@ const BACKEND_HINT = API_BASE_URL
   : "AI backend not reachable — is server/app.py running on :8788?";
 
 // Frontend client for the backend AI endpoint. The API key lives only on the
-// server (server/.env); the browser just sends the transcript text.
+// server (server/.env); the browser sends the RAW transcript (it may contain
+// recognition errors — the backend AI recovers the real place) plus an
+// optional local alias-list spelling hint.
 
 export class InterpretError extends Error {
   constructor(public code: string, message: string) {
@@ -16,6 +18,7 @@ export class InterpretError extends Error {
 
 export async function interpretDestination(
   transcript: string,
+  localHint: string | null,
   signal?: AbortSignal
 ): Promise<DestinationResult> {
   let res: Response;
@@ -23,7 +26,7 @@ export async function interpretDestination(
     res = await fetch(apiUrl("/api/interpret-destination"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transcript }),
+      body: JSON.stringify({ transcript, local_hint: localHint }),
       signal,
     });
   } catch (e) {

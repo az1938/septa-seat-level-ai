@@ -21,6 +21,12 @@ export async function recommendRoute(dest: DestinationResult, signal?: AbortSign
         intersection_or_address: dest.intersection_or_address,
         place_name: dest.place_name,
         destination_type: dest.destination_type,
+        // Real-place verification result (AI recovery → geocoder / street grid / place list)
+        verified_lat: dest.verification?.status === "VERIFIED" ? dest.verification.lat : null,
+        verified_lon: dest.verification?.status === "VERIFIED" ? dest.verification.lon : null,
+        resolved_place: dest.verification?.resolved_place ?? null,
+        resolved_address: dest.verification?.resolved_address ?? null,
+        verification_method: dest.verification?.method ?? null,
       }),
       signal,
     });

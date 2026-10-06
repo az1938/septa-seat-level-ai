@@ -1,17 +1,21 @@
 """
-Static GTFS (SEPTA bus) — the source of truth for DIRECT reachability.
+Static GTFS (SEPTA bus) — the source of truth for DIRECT reachability on Route 21.
 
-Two origins near 15th St (verified from GTFS at load time, see verify_origins):
-  PRIMARY_ORIGIN  14079  Walnut St & 15th St    — westbound (direction_id 1):
-                         9 → Andorra, 21 → 69th St TC, 42 → Wycombe / 61st-Pine
-  OPPOSITE_ORIGIN  6060  Chestnut St & 15th St  — eastbound (direction_id 0):
-                         9 → 4th-Walnut, 21 → Columbus-Dock, 42 → 2nd-Spruce
-They are on different streets (Walnut vs Chestnut), ~160 m apart.
+This prototype supports ONE route: Route 21 (SUPPORTED_ROUTES). There is no
+route comparison and no "fastest route" selection.
 
-A route is valid from an origin for a destination stop only if at least one
-trip of that route serves the origin and then serves the destination stop
-LATER in the SAME trip (higher stop_sequence). Direction comes from that, not
-from coordinates or route membership.
+Origins near 37th St & Chestnut St (verified against server/data/gtfs_bus and
+re-checked at every load, see verify_origins). Route 21 is a one-way pair here:
+eastbound on Chestnut, westbound on Walnut.
+  PRIMARY_ORIGIN    623    Chestnut St & 37th St — eastbound (direction_id 0,
+                           "Columbus-Dock"); all 229 eastbound trips, pickup allowed
+  OPPOSITE_ORIGIN   21362  Walnut St & 37th St   — westbound (direction_id 1,
+                           "69th St Transit Center"); all 229 westbound trips
+They are one block apart (~161 m).
+
+A destination stop is reachable from an origin only if at least one Route 21
+trip serves the origin and then serves the destination stop LATER in the SAME
+trip (higher stop_sequence). Direction comes from that, not from coordinates.
 
 Data: SEPTA's public GTFS (github.com/septadev/GTFS). The bus feed is
 downloaded once into server/data/gtfs_bus/ (git-ignored) if missing.
@@ -26,11 +30,12 @@ from pathlib import Path
 
 import requests
 
-PRIMARY_ORIGIN = "14079"  # Walnut St & 15th St (westbound) — the kiosk's stop
-OPPOSITE_ORIGIN = "6060"  # Chestnut St & 15th St (eastbound) — the other direction
+ROUTE = "21"
+SUPPORTED_ROUTES = (ROUTE,)  # the only route this prototype considers
+PRIMARY_ORIGIN = "623"  # Chestnut St & 37th St (eastbound) — the kiosk's stop
+OPPOSITE_ORIGIN = "21362"  # Walnut St & 37th St (westbound) — the other direction, one block south
 ORIGINS = (PRIMARY_ORIGIN, OPPOSITE_ORIGIN)
 ORIGIN_STOP = PRIMARY_ORIGIN  # backwards-compatible name
-CANDIDATE_ROUTES = ("9", "21", "42")
 
 GTFS_ZIP_URL = "https://github.com/septadev/GTFS/releases/latest/download/gtfs_public.zip"
 DATA_DIR = Path(__file__).with_name("data") / "gtfs_bus"
@@ -54,15 +59,15 @@ def ensure_downloaded(log=print):
 class GtfsIndex:
     def __init__(self):
         self.stops = {}  # stop_id -> {"id","name","lat","lon"}
-        self.trip_route = {}  # trip_id -> route_id (candidate routes only)
+        self.trip_route = {}  # trip_id -> route_id (Route 21 trips only)
         self.trip_direction = {}  # trip_id -> direction_id
         self.trip_headsign = {}
         # origin -> trip_id -> ordered stop_ids AFTER the origin (trips serving that origin)
         self.downstream = {o: {} for o in ORIGINS}
-        # origin -> route_id -> {stop_id: number of trips reaching it after the origin}
-        self.reach = {o: defaultdict(lambda: defaultdict(int)) for o in ORIGINS}
-        # origin -> route -> Counter[(direction_id, headsign)]
-        self.origin_service = {o: defaultdict(Counter) for o in ORIGINS}
+        # origin -> {stop_id: number of Route 21 trips reaching it after the origin}
+        self.reach = {o: defaultdict(int) for o in ORIGINS}
+        # origin -> Counter[(direction_id, headsign)] of the Route 21 trips serving it
+        self.origin_service = {o: Counter() for o in ORIGINS}
 
     # ── loading ────────────────────────────────────────────────────────────
     def load(self):
@@ -80,7 +85,7 @@ class GtfsIndex:
 
         with open(DATA_DIR / "trips.txt", newline="", encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
-                if r["route_id"] in CANDIDATE_ROUTES:
+                if r["route_id"] in SUPPORTED_ROUTES:
                     self.trip_route[r["trip_id"]] = r["route_id"]
                     self.trip_direction[r["trip_id"]] = r.get("direction_id", "")
                     self.trip_headsign[r["trip_id"]] = r.get("trip_headsign", "")
@@ -97,38 +102,38 @@ class GtfsIndex:
         for trip_id, s in seqs.items():
             s.sort()  # by stop_sequence
             ids = [stop for _, stop in s]
-            route = self.trip_route[trip_id]
             for origin in ORIGINS:
                 if origin not in ids:
                     continue
                 after = ids[ids.index(origin) + 1 :]
                 self.downstream[origin][trip_id] = after
-                self.origin_service[origin][route][(self.trip_direction[trip_id], self.trip_headsign[trip_id])] += 1
+                self.origin_service[origin][(self.trip_direction[trip_id], self.trip_headsign[trip_id])] += 1
                 for stop in set(after):
-                    self.reach[origin][route][stop] += 1
+                    self.reach[origin][stop] += 1
         self.verify_origins()
         return self
 
     def verify_origins(self):
-        """Fail loudly if the configured origins don't match the current GTFS."""
+        """Fail loudly if the configured origins don't match the current GTFS:
+        each must exist, be served by Route 21 in exactly one direction, and the
+        two origins must be opposite directions."""
+        dirs = {}
         for origin in ORIGINS:
             if origin not in self.stops:
                 raise RuntimeError(f"Origin stop {origin} not found in GTFS stops.txt")
-            missing = [r for r in CANDIDATE_ROUTES if not self.origin_service[origin][r]]
-            if missing:
-                raise RuntimeError(f"Origin {origin} is not served by route(s) {missing} in this GTFS feed")
-            dirs = {d for r in CANDIDATE_ROUTES for (d, _) in self.origin_service[origin][r]}
-            if len(dirs) != 1:
-                raise RuntimeError(f"Origin {origin} is served in more than one direction: {dirs}")
-        d_primary = {d for r in CANDIDATE_ROUTES for (d, _) in self.origin_service[PRIMARY_ORIGIN][r]}
-        d_opp = {d for r in CANDIDATE_ROUTES for (d, _) in self.origin_service[OPPOSITE_ORIGIN][r]}
-        if d_primary == d_opp:
-            raise RuntimeError("PRIMARY and OPPOSITE origins are served in the same direction")
+            if not self.origin_service[origin]:
+                raise RuntimeError(f"Origin {origin} is not served by Route {ROUTE} in this GTFS feed")
+            d = {direction for (direction, _) in self.origin_service[origin]}
+            if len(d) != 1:
+                raise RuntimeError(f"Origin {origin} is served by Route {ROUTE} in more than one direction: {d}")
+            dirs[origin] = d
+        if dirs[PRIMARY_ORIGIN] == dirs[OPPOSITE_ORIGIN]:
+            raise RuntimeError("PRIMARY and OPPOSITE origins are served in the same Route 21 direction")
 
     # ── queries ────────────────────────────────────────────────────────────
-    def routes_reaching(self, stop_id, origin=PRIMARY_ORIGIN):
-        """Candidate routes with ≥1 trip serving `origin` and then stop_id later in the same trip."""
-        return [r for r in CANDIDATE_ROUTES if self.reach[origin][r].get(stop_id, 0) > 0]
+    def reaches(self, stop_id, origin=PRIMARY_ORIGIN) -> bool:
+        """≥1 Route 21 trip serves `origin` and then stop_id later in the same trip."""
+        return self.reach[origin].get(stop_id, 0) > 0
 
     def trip_reaches(self, trip_id, stop_id, origin=PRIMARY_ORIGIN):
         """True/False if we know this trip from `origin`; None if not in static GTFS."""
@@ -141,17 +146,16 @@ class GtfsIndex:
         return {
             "stop_id": origin,
             "name": self.stops[origin]["name"],
-            "routes": {
-                r: [
-                    {"direction_id": d, "headsign": h, "trips": n}
-                    for (d, h), n in self.origin_service[origin][r].most_common()
-                ]
-                for r in CANDIDATE_ROUTES
-            },
+            "route": ROUTE,
+            "service": [
+                {"direction_id": d, "headsign": h, "trips": n}
+                for (d, h), n in self.origin_service[origin].most_common()
+            ],
         }
 
     def summary(self):
         return {
+            "route": ROUTE,
             "primary_origin": self.origin_info(PRIMARY_ORIGIN),
             "opposite_origin": self.origin_info(OPPOSITE_ORIGIN),
         }

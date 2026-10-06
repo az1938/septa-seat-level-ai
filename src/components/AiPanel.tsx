@@ -37,7 +37,14 @@ const fade = {
   transition: { duration: 0.35, ease: "easeOut" as const },
 };
 
-export function AiPanel({ ctx }: { ctx: InteractionContext }) {
+/** Face width while idle / during a conversation (the iPhone page uses larger values). */
+export interface FaceSize {
+  idle: string;
+  active: string;
+}
+const DEFAULT_FACE: FaceSize = { idle: "62%", active: "30%" };
+
+export function AiPanel({ ctx, faceSize = DEFAULT_FACE }: { ctx: InteractionContext; faceSize?: FaceSize }) {
   const { state, recommendation } = ctx;
   const isIdle = state === "IDLE";
 
@@ -46,7 +53,7 @@ export function AiPanel({ ctx }: { ctx: InteractionContext }) {
       <motion.div
         className="panel-face"
         initial={false}
-        animate={{ width: isIdle ? "62%" : "30%", marginTop: isIdle ? "0%" : "-4%" }}
+        animate={{ width: isIdle ? faceSize.idle : faceSize.active, marginTop: isIdle ? "0%" : "-4%" }}
         transition={{ type: "spring", stiffness: 140, damping: 20 }}
       >
         {/* gentle float so the idle face feels alive */}
@@ -98,6 +105,16 @@ export function AiPanel({ ctx }: { ctx: InteractionContext }) {
                 ))}
               </div>
               <p className="panel-caption">Finding your route…</p>
+            </motion.div>
+          )}
+
+          {state === "RECOMMENDATION" && !recommendation && ctx.redirect?.kind === "walk_recommended" && (
+            <motion.div key="walk" {...fade} className="panel-stack">
+              <p className="panel-rec-eta">This destination is within walking distance.</p>
+              <p className="panel-hint">
+                About {Math.max(1, Math.round(ctx.redirect.walkingMinutes ?? 0))}{" "}
+                {Math.max(1, Math.round(ctx.redirect.walkingMinutes ?? 0)) === 1 ? "minute" : "minutes"} on foot.
+              </p>
             </motion.div>
           )}
 

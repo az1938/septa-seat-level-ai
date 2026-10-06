@@ -1,255 +1,95 @@
-import { useEffect, useState } from "react";
-import {
-  STATE_ORDER,
-  MAX_RETRIES,
-  nextEventFor,
-  type InteractionContext,
-  type InteractionEvent,
-  type Recommendation,
-  type RouteResult,
-} from "../state/interactionMachine";
-import type { LedEvent, LedState } from "../state/ledMachine";
-import type { PersonDetection } from "../hooks/usePersonDetection";
-import { CameraPreview } from "./CameraPreview";
-import { currentVoiceLabel } from "../lib/speech";
-import type { SpeechCapture } from "../hooks/useSpeechCapture";
+import type { Interpretation, RouteResult, Routing } from "../state/interactionMachine";
 
-const MIC_LABEL: Record<SpeechCapture["micStatus"], string> = {
-  unknown: "—",
-  listening: "STARTING…",
-  granted: "READY",
-  denied: "PERMISSION DENIED",
-  "no-microphone": "NOT FOUND",
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// Researcher-only pipeline views, rendered on /monitor (src/pages/MonitorPage.tsx).
+// (This file used to hold the floating DEV controller of the single combined page;
+// the three-device setup replaced that page, so only the debug views remain.)
+// They are fed from the shared backend session, never shown to riders.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Developer-only controller. Not part of the rider-facing design.
-//
-//   Next ▸   — sends the normal event for the current state (legal path only)
-//   1–5      — jump straight to a state (bypasses the transition table)
-//   Reset    — AI panel back to IDLE (the LED is NOT cleared)
-//   Clear LED — empties the seat-level LED tile (separate LED session)
-//
-// Keyboard: → / Space = Next · 1–5 = jump · Esc = Reset · ` = hide/show
-//
-// The mock route/ETA below exists ONLY so the RECOMMENDATION state and the
-// LED colors can be previewed before SEPTA is connected. It is clearly
-// labelled as mock and will be replaced by real routing + live ETA.
-
-const ETA_PRESETS = [
-  { label: "12 min (red)", value: 12 },
-  { label: "6 min (yellow)", value: 6 },
-  { label: "2 min (green)", value: 2 },
-  { label: "arriving (white)", value: 0 },
-];
-
-interface Props {
-  ctx: InteractionContext;
-  dispatch: (e: InteractionEvent) => void;
-  led: LedState;
-  ledDispatch: (e: LedEvent) => void;
-  detection: PersonDetection;
-  speechStatus: string;
-  speech: SpeechCapture;
-}
-
-export function DevController({
-  ctx,
-  dispatch,
-  led,
-  ledDispatch,
-  detection,
-  speechStatus,
-  speech,
-}: Props) {
-  const [open, setOpen] = useState(true);
-  const [mock, setMock] = useState<Recommendation>({ route: "21", etaMinutes: 6 });
-
-  // Keep the lit tile in sync when the mock values change during RECOMMENDATION.
-  useEffect(() => {
-    if (ctx.state === "RECOMMENDATION") {
-      dispatch({ type: "DEV_JUMP", to: "RECOMMENDATION", recommendation: mock });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mock]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLSelectElement) return;
-      if (e.key === "`") return setOpen((o) => !o);
-      if (e.key === "ArrowRight" || e.key === " ") {
-        e.preventDefault();
-        dispatch(nextEventFor(ctx.state, mock));
-      } else if (e.key === "Escape") {
-        dispatch({ type: "RESET" });
-      } else if (/^[1-5]$/.test(e.key)) {
-        dispatch({ type: "DEV_JUMP", to: STATE_ORDER[Number(e.key) - 1], recommendation: mock });
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [ctx.state, mock, dispatch]);
-
-  if (!open) {
-    return (
-      <button className="dev-toggle" onClick={() => setOpen(true)} title="Show dev controller (`)">
-        DEV
-      </button>
-    );
-  }
-
-  return (
-    <aside className="dev" aria-label="Developer controller">
-      <header className="dev-head">
-        <span>DEV · state machine</span>
-        <button className="dev-x" onClick={() => setOpen(false)} title="Hide (`)">
-          ×
-        </button>
-      </header>
-
-      <CameraPreview detection={detection} />
-      <p className="dev-foot">
-        SPEECH: {speechStatus} · {currentVoiceLabel()}
-        <br />
-        PROMPT: {ctx.prompt} · RETRIES: {ctx.retryCount}/{MAX_RETRIES}
-        {ctx.retryReason ? ` (last: ${ctx.retryReason})` : ""}
-      </p>
-      <div className="dev-mic">
-        <p className="dev-cam-status">
-          MICROPHONE:{" "}
-          <strong data-on={speech.micStatus === "granted"}>
-            {speech.supported ? MIC_LABEL[speech.micStatus] : "UNSUPPORTED BROWSER"}
-          </strong>
-          {speech.listening && <span className="dev-cam-score"> · listening (try {speech.attempt})</span>}
-          <br />
-          {speech.listening && (
-            <>
-              HEARING: “{speech.interim || "…"}”
-              <br />
-            </>
-          )}
-          RAW TRANSCRIPT: {ctx.transcript ? <strong data-on="true">“{ctx.transcript}”</strong> : "—"}
-          {ctx.transcript && (
-            <>
-              <br />
-              NORMALIZED TRANSCRIPT:{" "}
-              <strong data-on={ctx.normalizedTranscript !== ctx.transcript}>“{ctx.normalizedTranscript}”</strong>
-              {ctx.normalizedTranscript === ctx.transcript && <span className="dev-cam-score"> (unchanged)</span>}
-            </>
-          )}
-        </p>
-        {speech.error && <p className="dev-cam-error">{speech.error}</p>}
-        <AiResult ctx={ctx} />
-        <RoutingResult ctx={ctx} />
-        {ctx.state === "LISTENING" && !speech.listening && speech.supported && (
-          <button className="dev-btn" onClick={speech.retry}>
-            Listen again
-          </button>
-        )}
-      </div>
-
-      <div className="dev-states">
-        {STATE_ORDER.map((s, i) => (
-          <button
-            key={s}
-            className="dev-state"
-            data-active={ctx.state === s}
-            onClick={() => dispatch({ type: "DEV_JUMP", to: s, recommendation: mock })}
-          >
-            <kbd>{i + 1}</kbd> {s.replace("_", " ")}
-          </button>
-        ))}
-      </div>
-
-      <div className="dev-row">
-        <button className="dev-btn primary" onClick={() => dispatch(nextEventFor(ctx.state, mock))}>
-          Next ▸
-        </button>
-        <button className="dev-btn" onClick={() => dispatch({ type: "RESET" })}>
-          Reset
-        </button>
-      </div>
-
-      <div className="dev-row">
-        <button
-          className="dev-btn"
-          onClick={() => ledDispatch({ type: "LED_CLEAR" })}
-          disabled={led.status === "EMPTY"}
-        >
-          Clear LED
-        </button>
-      </div>
-      <p className="dev-foot">
-        LED:{" "}
-        {led.status === "ASSIGNED"
-          ? `ASSIGNED · ${led.recommendation.route} / ${led.recommendation.etaMinutes} min` +
-            (led.source ? ` · ${led.source}` : "") +
-            (led.tracking
-              ? ` · refreshed ${
-                  led.lastRefreshAt ? new Date(led.lastRefreshAt).toLocaleTimeString() : "— (every 10 s)"
-                }`
-              : " · mock (no refresh)")
-          : "EMPTY"}
-      </p>
-      {led.status === "ASSIGNED" && led.refreshError && (
-        <p className="dev-cam-error">LED refresh failed (keeping last ETA): {led.refreshError}</p>
-      )}
-
-      <fieldset className="dev-mock">
-        <legend>Mock recommendation (no SEPTA yet)</legend>
-        <label>
-          Route
-          <select value={mock.route} onChange={(e) => setMock({ ...mock, route: e.target.value })}>
-            {["9", "21", "42"].map((r) => (
-              <option key={r}>{r}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          ETA
-          <select
-            value={mock.etaMinutes}
-            onChange={(e) => setMock({ ...mock, etaMinutes: Number(e.target.value) })}
-          >
-            {ETA_PRESETS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </fieldset>
-
-      <p className="dev-foot">→/Space next · 1–5 jump · Esc reset · ` hide</p>
-    </aside>
-  );
-}
-
-// DEV-only view of the AI destination interpretation.
-function AiResult({ ctx }: { ctx: InteractionContext }) {
-  const it = ctx.interpretation;
+// DEV-only view of the retrieve-then-reason pipeline:
+// raw transcript → search variants → REAL places retrieved → AI selection → verification.
+export function AiResult({ interpretation: it }: { interpretation: Interpretation | null }) {
   if (!it) return null;
-  if (it.phase === "pending") return <p className="dev-cam-status">AI DESTINATION: interpreting…</p>;
+  if (it.phase === "pending")
+    return <p className="dev-cam-status">RECOVERY: searching real places + AI ranking…</p>;
   if (it.phase === "error")
-    return <p className="dev-cam-error">AI ERROR ({it.code}): {it.message}</p>;
+    return <p className="dev-cam-error">RECOVERY ERROR ({it.code}): {it.message}</p>;
   const r = it.result;
+  const v = r.verification;
+  const places = r.candidate_places ?? [];
+  const num = (n: number | null | undefined) => (typeof n === "number" ? n.toFixed(2) : "—");
   return (
     <p className="dev-cam-status">
-      {r.status === "ok" ? (
+      RAW TRANSCRIPT: “{r.raw_transcript}”
+      <br />
+      SEARCH VARIANTS:{" "}
+      {(r.search_variants ?? [])
+        .map((sv) => (sv.dropped ? `“${sv.text}” (dropped: adds words not heard)` : `“${sv.text}”`))
+        .join(" · ") || "—"}
+      {(r.mentioned_streets ?? []).length > 0 && (
         <>
-          AI DESTINATION: <strong data-on="true">{r.intersection_or_address ?? r.place_name ?? r.destination_text}</strong>
           <br />
-          {r.place_name && r.intersection_or_address && (
+          STREET MENTIONED: {r.mentioned_streets!.join(", ")}
+        </>
+      )}
+      {r.explicit_location && (
+        <>
+          <br />
+          NAMED LOCATION: “{r.explicit_location}” — {r.explicit_location_note}
+        </>
+      )}
+      <br />
+      RETRIEVED PLACES ({r.retrieved_count ?? places.length}
+      {r.rejected_count ? `, ${r.rejected_count} rejected` : ""}):
+      {places.length === 0 && " none"}
+      {places.slice(0, 10).map((p, i) => (
+        <span key={i}>
+          <br />
+          &nbsp;{i + 1}. {p.selected ? <strong data-on="true">{p.name}</strong> : p.name} —{" "}
+          {p.address.split(",")[0] || "?"}, {p.city_state || "?"}
+          <br />
+          &nbsp;&nbsp;&nbsp;in_philadelphia: {p.in_philadelphia ?? "?"} · {(p.distance_from_stop_m / 1000).toFixed(1)}{" "}
+          km from stop
+          {p.eligible === false ? (
             <>
-              PLACE: {r.place_name}
-              <br />
+              {" "}
+              · <strong>REJECTED: {p.rejected_reason}</strong>
+            </>
+          ) : (
+            <>
+              {" "}
+              · name {num(p.name_similarity ?? p.phonetic_similarity)}
+              {p.street_match != null ? ` · street ${p.street_match ? "✓" : "✗"}` : ""} · AI {num(p.ai_confidence)}
+              {p.final_confidence != null ? ` · final ${num(p.final_confidence)}` : ""}
             </>
           )}
-          TYPE: {r.destination_type} · CONFIDENCE: {r.confidence.toFixed(2)}
-        </>
-      ) : (
+        </span>
+      ))}
+      {(r.retrieval_errors ?? []).length > 0 && (
         <>
-          AI: <strong>{r.status === "needs_clarification" ? "NEEDS CLARIFICATION" : "NOT A DESTINATION"}</strong>
-          <br />“{r.clarification_question}”
+          <br />
+          SEARCH ERRORS: {r.retrieval_errors!.length}
+        </>
+      )}
+      <br />
+      AI SELECTED: <strong data-on={!!r.ai_selected}>{r.ai_selected ?? "none"}</strong>
+      {r.ai_status ? ` (${r.ai_status}, AI ${num(r.ai_confidence)})` : ""}
+      <br />
+      FINAL CONFIDENCE: {num(r.confidence)}
+      <br />
+      PLACE VERIFICATION: <strong data-on={v?.status === "VERIFIED"}>{v?.status ?? "—"}</strong>
+      <br />
+      RESOLVED PLACE: {v?.resolved_place ?? "—"}
+      <br />
+      RESOLVED ADDRESS: {v?.resolved_address ?? "—"}
+      <br />
+      MATCH METHOD: {v?.status === "VERIFIED" ? `AI recovery → ${v.method}` : "—"}
+      {r.status !== "ok" && (
+        <>
+          <br />
+          RESULT: <strong>{r.status === "needs_clarification" ? "NEEDS CLARIFICATION" : "NOT A DESTINATION"}</strong>{" "}
+          “{r.clarification_question}”
         </>
       )}
     </p>
@@ -257,7 +97,7 @@ function AiResult({ ctx }: { ctx: InteractionContext }) {
 }
 
 // DEV-only: how the AI's destination was resolved to a place / address / stops.
-function DestinationResolution({ r }: { r: RouteResult }) {
+export function DestinationResolution({ r }: { r: RouteResult }) {
   const inp = r.destination_input ?? {};
   const raw = inp.place_name || inp.destination_text || inp.intersection_or_address || "—";
   return (
@@ -283,17 +123,45 @@ function DestinationResolution({ r }: { r: RouteResult }) {
   );
 }
 
+// DEV-only: walking estimate from the origin (checked before Route 21).
+export function Walking({ r }: { r: RouteResult }) {
+  const w = r.walking;
+  if (!w) return null;
+  return (
+    <>
+      WALKING: distance {w.distance_m ?? "—"} m (straight line {w.straight_line_m ?? "—"} m) · estimated{" "}
+      {w.minutes ?? "—"} min · walkable ≤{w.threshold_min ?? 10} min:{" "}
+      <strong data-on={w.walkable}>{w.walkable ? "YES" : "NO"}</strong>
+      <br />
+      WALK SOURCE: {w.source}
+      <br />
+    </>
+  );
+}
+
 // DEV-only view of the transit routing (static GTFS + live SEPTA).
-function RoutingResult({ ctx }: { ctx: InteractionContext }) {
-  const rt = ctx.routing;
+export function RoutingResult({ routing: rt }: { routing: Routing | null }) {
   if (!rt) return null;
   if (rt.phase === "pending") return <p className="dev-cam-status">ROUTING: checking GTFS + live SEPTA…</p>;
   if (rt.phase === "error") return <p className="dev-cam-error">ROUTING ERROR ({rt.code}): {rt.message}</p>;
   const r = rt.result;
+  if (r.status === "walk_recommended") {
+    const t = r.route21_if_not_walking;
+    return (
+      <p className="dev-cam-status">
+        <DestinationResolution r={r} />
+        <Walking r={r} />
+        ROUTING RESULT: <strong data-on="true">WALK RECOMMENDED</strong> (no ETA fetched, LED untouched)
+        <br />
+        ROUTE 21 IF NOT WALKING: {t ? `${t.status}${t.destination_stop ? ` → stop ${t.destination_stop}` : ""}${t.from_stop ? ` from ${t.from_stop}` : ""}` : "—"}
+      </p>
+    );
+  }
   if (r.status === "opposite_direction") {
     return (
       <p className="dev-cam-status">
         <DestinationResolution r={r} />
+        <Walking r={r} />
         ROUTING: <strong data-on="true">OPPOSITE DIRECTION</strong>
         <br />
         CURRENT STOP: {r.current_stop_id} ({r.current_stop_name})
@@ -303,12 +171,12 @@ function RoutingResult({ ctx }: { ctx: InteractionContext }) {
         DESTINATION STOP: {r.destination_stop} ({r.destination_name}
         {r.destination_distance_m ? `, ${r.destination_distance_m} m away` : ""})
         <br />
-        VALID ROUTES FROM OTHER STOP: {(r.valid_routes ?? []).join(", ") || "none"}
+        ROUTE 21 REACHES IT FROM THE OTHER STOP ONLY
       </p>
     );
   }
   const label: Record<string, string> = {
-    no_direct_route: "NO DIRECT ROUTE (9/21/42, either direction)",
+    no_direct_route: "ROUTE 21 DOES NOT REACH IT (either direction)",
     destination_not_found: "DESTINATION NOT MATCHED TO A STOP",
     no_eta_available: "NO LIVE OR SCHEDULED ETA",
   };
@@ -316,6 +184,7 @@ function RoutingResult({ ctx }: { ctx: InteractionContext }) {
     <div>
       <p className="dev-cam-status">
         <DestinationResolution r={r} />
+        <Walking r={r} />
         ROUTING: <strong data-on={r.status === "ok"}>{r.status === "ok" ? "OK" : label[r.status]}</strong>
         {r.destination_stop ? (
           <>
@@ -333,18 +202,13 @@ function RoutingResult({ ctx }: { ctx: InteractionContext }) {
           )
         )}
         <br />
-        VALID ROUTES: {r.valid_routes && r.valid_routes.length ? r.valid_routes.join(", ") : "none"}
-        {r.route_etas && r.route_etas.length > 0 && (
-          <>
-            <br />
-            ETAS: {r.route_etas.map((e) => `${e.route}=${e.eta_minutes}m ${e.eta_source}`).join(" · ")}
-          </>
-        )}
+        ORIGIN: {r.origin_stop} ({r.origin_name}) · ROUTE 21 ONLY
         {r.status === "ok" && (
           <>
             <br />
-            SELECTED: <strong data-on="true">{r.selected_route}</strong> · ETA: {r.eta_minutes} min · SOURCE:{" "}
+            ROUTE <strong data-on="true">{r.selected_route}</strong> · ETA: {r.eta_minutes} min · SOURCE:{" "}
             {r.eta_source}
+            {r.selected_trip_id ? ` · trip ${r.selected_trip_id}` : ""}
           </>
         )}
       </p>

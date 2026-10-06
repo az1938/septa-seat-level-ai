@@ -25,6 +25,8 @@ If nothing matches, it returns no candidates — it never invents a stop.
 
 import math
 import re
+import threading
+import time
 
 import requests
 
@@ -35,6 +37,8 @@ WALK_RADIUS_M = 300  # max walk from the destination to a usable stop
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_UA = "SeatLevelETA-ClassPrototype/0.3 (Penn design course; local demo)"
 PHILLY_VIEWBOX = "-75.2803,40.1379,-74.9558,39.8670"  # lon1,lat1,lon2,lat2
+PHILLY_BBOX = (-75.2803, 39.8670, -74.9558, 40.1379)  # min lon, min lat, max lon, max lat
+PHOTON_URL = "https://photon.komoot.io/api/"
 
 _SUFFIXES = {
     "st", "street", "ave", "av", "avenue", "blvd", "boulevard", "rd", "road", "dr", "drive",
@@ -140,20 +144,220 @@ def _address_grid(idx: StopNameIndex, text: str):
     return cands, point
 
 
-def geocode(query: str):
-    """Nominatim (OpenStreetMap), bounded to Philadelphia. Returns (lat, lon, label) or None."""
+# ─── Geocoding (real place data) ────────────────────────────────────────────
+# Nominatim (OpenStreetMap) first, Photon (also OpenStreetMap data) as fallback.
+# Results are restricted to the Philadelphia bounding box. Nominatim's usage
+# policy allows ≤ 1 request/second, so calls are throttled and cached.
+
+_geo_lock = threading.Lock()
+_geo_last = [0.0]
+_geo_cache = {}
+
+
+def _in_philly(lat, lon):
+    return PHILLY_BBOX[1] <= lat <= PHILLY_BBOX[3] and PHILLY_BBOX[0] <= lon <= PHILLY_BBOX[2]
+
+
+def _nominatim(query, limit, near=None):
+    """near=None → bounded to the Philadelphia box; near=(lat, lon) → bounded to a box
+    around that point (only used when the rider explicitly named a place outside Philadelphia)."""
+    with _geo_lock:
+        wait = 1.05 - (time.time() - _geo_last[0])
+        if wait > 0:
+            time.sleep(wait)
+        _geo_last[0] = time.time()
+    if near:
+        d = NEAR_BOX_DEG
+        viewbox = f"{near[1] - d},{near[0] + d},{near[1] + d},{near[0] - d}"
+    else:
+        viewbox = PHILLY_VIEWBOX
     resp = requests.get(
         NOMINATIM_URL,
-        params={"q": query, "format": "jsonv2", "limit": 1, "viewbox": PHILLY_VIEWBOX, "bounded": 1},
+        params={"q": query, "format": "jsonv2", "limit": limit, "viewbox": viewbox,
+                "bounded": 1, "addressdetails": 1, "countrycodes": "us"},
         headers={"User-Agent": NOMINATIM_UA},
         timeout=10,
     )
     resp.raise_for_status()
-    results = resp.json()
-    if not results:
+    return [_from_nominatim(r) for r in resp.json()]
+
+
+def _from_nominatim(r):
+    a = r.get("address") or {}
+    street = " ".join(x for x in (a.get("house_number"), a.get("road")) if x)
+    city = a.get("city") or a.get("town") or a.get("village") or a.get("municipality") or a.get("hamlet") or ""
+    return {
+        "name": r.get("name") or (r.get("display_name") or "").split(",")[0],
+        "address": ", ".join(x for x in (street, city, a.get("state"), a.get("postcode")) if x)
+        or r.get("display_name", ""),
+        "display_name": r.get("display_name", ""),
+        "lat": float(r["lat"]), "lon": float(r["lon"]),
+        "kind": f"{r.get('category', '')}/{r.get('type', '')}",
+        "city": city, "county": a.get("county") or "", "state": a.get("state") or "",
+        "source": "nominatim",
+    }
+
+
+# University City — where most riders from this stop head; Photon results are biased
+# toward it (and bounded to the Philadelphia box).
+UNIVERSITY_CITY = (39.9522, -75.1932)
+NEAR_BOX_DEG = 0.15  # ≈ 15 km box around an explicitly named outside place
+
+
+def _photon(query, limit, bias=None, near=None):
+    if near:
+        d = NEAR_BOX_DEG
+        b = (near[1] - d, near[0] - d, near[1] + d, near[0] + d)
+        bias = near
+    else:
+        b = PHILLY_BBOX
+    params = {"q": query, "limit": limit, "bbox": f"{b[0]},{b[1]},{b[2]},{b[3]}"}
+    if bias:
+        params.update(lat=bias[0], lon=bias[1])
+    resp = requests.get(PHOTON_URL, params=params, headers={"User-Agent": NOMINATIM_UA}, timeout=10)
+    resp.raise_for_status()
+    return [_from_photon(f) for f in resp.json().get("features", [])]
+
+
+def _from_photon(f):
+    p = f.get("properties") or {}
+    lon, lat = f["geometry"]["coordinates"][:2]
+    street = " ".join(x for x in (p.get("housenumber"), p.get("street")) if x)
+    return {
+        "name": p.get("name") or street,
+        "address": ", ".join(x for x in (street, p.get("city"), p.get("state"), p.get("postcode")) if x),
+        "display_name": ", ".join(x for x in (p.get("name"), street, p.get("city")) if x),
+        "lat": float(lat), "lon": float(lon),
+        "kind": f"{p.get('osm_key', '')}/{p.get('osm_value', '')}",
+        "city": p.get("city") or p.get("town") or p.get("village") or "",
+        "county": p.get("county") or "", "state": p.get("state") or "",
+        "source": "photon",
+    }
+
+
+# ─── Is a place really IN Philadelphia? ─────────────────────────────────────
+# The Philadelphia bounding box also covers Camden, Pennsauken, Cherry Hill, Maple
+# Shade … in New Jersey and suburbs in PA. So the box is only a search window; the
+# real test uses the city / county / state the map data reports for the place.
+_CORE_PHILLY = (-75.2803, 39.8670, -75.1350, 40.1379)  # west of the Delaware at Center City
+
+
+def philly_status(r: dict):
+    """→ ("YES" | "YES (inferred)" | "NO" | "UNKNOWN", "City, State")."""
+    city = (r.get("city") or "").strip()
+    county = (r.get("county") or "").strip().lower()
+    state = (r.get("state") or "").strip()
+    label = ", ".join(x for x in (city, state) if x)
+    if state and state.lower() not in ("pennsylvania", "pa"):
+        return "NO", label
+    if city.lower() == "philadelphia" or county in ("philadelphia county", "philadelphia"):
+        return "YES", label or "Philadelphia, PA"
+    if city:
+        return "NO", label  # another Pennsylvania municipality (Upper Darby, Cheltenham, …)
+    # no admin data at all → only trust coordinates well west of the Delaware River
+    lat, lon = r["lat"], r["lon"]
+    b = _CORE_PHILLY
+    if b[1] <= lat <= b[3] and b[0] <= lon <= b[2]:
+        return "YES (inferred)", "Philadelphia, PA (from coordinates)"
+    return "UNKNOWN", label
+
+
+_search_cache = {}
+
+
+def place_search(query: str, provider: str, limit: int = 6, near=None):
+    """Broad real-place DISCOVERY for one search string (used by destination_recovery).
+    provider: "photon" (fuzzy) or "nominatim" (≤ 1 req/s).
+    near=None → the Philadelphia search window (Photon biased to University City);
+    near=(lat, lon) → a window around a place the rider explicitly named.
+    No name filtering and no Philadelphia decision here — the caller classifies results.
+    Raises on network / HTTP errors (the caller records them)."""
+    key = (provider, query.strip().lower(), limit, near)
+    if key in _search_cache:
+        return _search_cache[key]
+    if provider == "photon":
+        res = _photon(query, limit, bias=UNIVERSITY_CITY, near=near)
+    elif provider == "nominatim":
+        res = _nominatim(query, limit, near=near)
+    else:
+        raise ValueError(f"unknown provider {provider}")
+    res = [r for r in res if r.get("name")]
+    if not near:
+        res = [r for r in res if _in_philly(r["lat"], r["lon"])]
+    _search_cache[key] = res
+    return res
+
+
+REGION_VIEWBOX = "-76.2,40.7,-74.2,39.3"  # greater Philadelphia region (bias for locality lookups)
+
+
+def locality_search(phrase: str):
+    """Is `phrase` a real town / city / county / state? → list of
+    {name, lat, lon, city, county, state, kind, source} (settlement or admin-area results only)."""
+    key = ("locality", phrase.strip().lower())
+    if key in _search_cache:
+        return _search_cache[key]
+    out, errors = [], []
+    try:
+        with _geo_lock:
+            wait = 1.05 - (time.time() - _geo_last[0])
+            if wait > 0:
+                time.sleep(wait)
+            _geo_last[0] = time.time()
+        resp = requests.get(
+            NOMINATIM_URL,
+            params={"q": phrase, "format": "jsonv2", "limit": 5, "viewbox": REGION_VIEWBOX, "bounded": 0,
+                    "addressdetails": 1, "countrycodes": "us"},
+            headers={"User-Agent": NOMINATIM_UA}, timeout=10,
+        )
+        resp.raise_for_status()
+        out = [_from_nominatim(r) for r in resp.json()]
+    except Exception as e:
+        errors.append(f"nominatim: {e}")
+    if not out:
+        try:
+            resp = requests.get(PHOTON_URL, params={"q": phrase, "limit": 5, "lat": 39.95, "lon": -75.16},
+                                headers={"User-Agent": NOMINATIM_UA}, timeout=10)
+            resp.raise_for_status()
+            out = [_from_photon(f) for f in resp.json().get("features", [])]
+        except Exception as e:
+            errors.append(f"photon: {e}")
+    if errors and not out:
+        raise RuntimeError("; ".join(errors))
+    out = [r for r in out if r["kind"].split("/")[0] in ("place", "boundary")]
+    _search_cache[key] = out
+    return out
+
+
+def geocode_search(query: str, limit: int = 5):
+    """Real place lookup, Philadelphia only → list of {name, address, lat, lon, kind, source}.
+    Raises only if BOTH geocoders fail; an empty list means "not found"."""
+    key = (query.strip().lower(), limit)
+    if key in _geo_cache:
+        return _geo_cache[key]
+    errors = []
+    results = None
+    for fn in (_nominatim, _photon):
+        try:
+            results = [r for r in fn(query, limit) if _in_philly(r["lat"], r["lon"])]
+        except Exception as e:  # network / rate limit → try the next geocoder
+            errors.append(f"{fn.__name__.strip('_')}: {e}")
+            continue
+        if results:
+            break
+    if results is None:
+        raise RuntimeError("; ".join(errors))
+    _geo_cache[key] = results
+    return results
+
+
+def geocode(query: str):
+    """Single best Philadelphia result → (lat, lon, label) or None (kept for existing callers)."""
+    res = geocode_search(query, limit=1)
+    if not res:
         return None
-    r = results[0]
-    return float(r["lat"]), float(r["lon"]), r.get("display_name", query)
+    r = res[0]
+    return r["lat"], r["lon"], r["display_name"] or r["name"]
 
 
 def _geocoded(stops: dict, point):
@@ -187,9 +391,27 @@ def stops_near(stops: dict, point, radius_m=WALK_RADIUS_M):
 
 def find_candidate_stops(idx: StopNameIndex, dest: dict):
     """
-    dest: {destination_text, intersection_or_address, place_name, destination_type}
+    dest: {destination_text, intersection_or_address, place_name, destination_type,
+           optional verified_lat / verified_lon / resolved_place / resolved_address / verification_method}
     Returns {"method", "candidates": [(stop_id, distance_m)], "geocode": ..., "errors": [...]}.
     """
+    # AI-recovered destination that was already verified against real place data
+    # (see destination_recovery.py): use its coordinates directly.
+    try:
+        vlat, vlon = float(dest.get("verified_lat")), float(dest.get("verified_lon"))
+    except (TypeError, ValueError):
+        vlat = vlon = None
+    if vlat is not None and _in_philly(vlat, vlon):
+        return {
+            "method": "AI recovery → " + (dest.get("verification_method") or "verified"),
+            "query": dest.get("resolved_place") or dest.get("destination_text"),
+            "candidates": _geocoded(idx.stops, (vlat, vlon, "")),
+            "point": (vlat, vlon),
+            "resolved_place": dest.get("resolved_place"),
+            "resolved_address": dest.get("resolved_address"),
+            "errors": [],
+        }
+
     ioa = (dest.get("intersection_or_address") or "").strip()
     text = (dest.get("destination_text") or "").strip()
     place = (dest.get("place_name") or "").strip()
@@ -254,3 +476,16 @@ def find_candidate_stops(idx: StopNameIndex, dest: dict):
                 "errors": errors,
             }
     return {"method": None, "candidates": [], "point": None, "errors": errors}
+
+
+def locate_street_destination(idx: StopNameIndex, text: str):
+    """Offline check of a street address / intersection against real Philadelphia street
+    data (GTFS stop names + the block-number grid). → {point, method, label} or None."""
+    c = _intersection(idx, text or "")
+    if c:
+        return {"point": centroid(idx.stops, [sid for sid, _ in c]), "method": "street_grid (intersection)",
+                "label": text}
+    c, pt = _address_grid(idx, text or "")
+    if c and pt:
+        return {"point": pt, "method": "street_grid (address block)", "label": text}
+    return None

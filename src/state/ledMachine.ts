@@ -22,7 +22,7 @@ import type { Recommendation } from "./interactionMachine";
 
 /** What the refresh poll needs to ask for the same route (and the same bus). */
 export interface LedTracking {
-  stop: string; // origin stop, e.g. "14079"
+  stop: string; // origin stop, e.g. "623" (Chestnut St & 37th St)
   dest: string | null; // destination stop — only trips reaching it count
   tripId: string | null; // the specific bus being tracked, if known
 }

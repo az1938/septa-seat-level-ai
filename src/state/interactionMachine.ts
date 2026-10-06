@@ -56,6 +56,39 @@ export type Interpretation =
   | { phase: "done"; result: DestinationResult }
   | { phase: "error"; code: string; message: string };
 
+// A REAL place returned by place search (server/destination_recovery.py), with
+// the AI's ranking attached. The AI may only pick from these.
+export interface RetrievedPlace {
+  name: string;
+  address: string;
+  lat: number;
+  lon: number;
+  category: string;
+  sources: string[]; // "photon" | "nominatim" | "local verified place list" | "street_grid (…)"
+  found_by: string[]; // which search variants returned it
+  distance_from_stop_m: number;
+  phonetic_similarity: number; // raw transcript ↔ place name
+  name_similarity?: number;
+  city?: string;
+  state?: string;
+  city_state?: string;
+  // Philadelphia is a hard prior: decided from the map data's city / county / state
+  in_philadelphia?: "YES" | "YES (inferred)" | "NO" | "UNKNOWN";
+  eligible?: boolean; // false → never shown to the AI
+  rejected_reason?: string | null; // e.g. "outside Philadelphia"
+  street_match?: boolean | null; // on the street the rider mentioned (null = none mentioned)
+  ai_confidence: number | null;
+  ai_reason?: string;
+  final_confidence?: number | null;
+  selected: boolean;
+}
+
+export interface SearchVariant {
+  text: string;
+  origin: string; // "transcript" | "connector words removed" | "street name completed" | "AI spelling variant" | …
+  dropped?: boolean; // AI variant rejected for adding words the rider did not say
+}
+
 export interface DestinationResult {
   status: "ok" | "needs_clarification" | "not_a_destination";
   raw_transcript: string;
@@ -63,26 +96,59 @@ export interface DestinationResult {
   destination_text: string | null;
   intersection_or_address: string | null;
   place_name: string | null;
-  confidence: number;
+  confidence: number; // FINAL confidence (AI + sound-alike + real-place evidence)
   clarification_question: string | null;
   model?: string;
+  // retrieve-then-reason pipeline: transcript → search variants → real places → AI ranking
+  local_hint?: string | null;
+  search_variants?: SearchVariant[];
+  retrieved_count?: number;
+  rejected_count?: number;
+  mentioned_streets?: string[];
+  explicit_location?: string | null; // a town / state the rider explicitly named
+  explicit_location_note?: string | null;
+  outside_location?: { label: string; lat: number; lon: number; state: string; level: string } | null;
+  candidate_places?: RetrievedPlace[];
+  retrieval_errors?: string[];
+  ai_status?: "ok" | "candidates" | "needs_clarification" | "not_a_destination" | null;
+  ai_selected?: string | null;
+  interpreted_destination?: string | null;
+  ai_confidence?: number;
+  verification?: {
+    status:
+      | "VERIFIED"
+      | "NONE"
+      | "NO_REAL_PLACES"
+      | "NO_PHILADELPHIA_PLACES"
+      | "NO_PLAUSIBLE_MATCH"
+      | "LOW_CONFIDENCE"
+      | "AMBIGUOUS";
+    method: string | null;
+    resolved_place: string | null;
+    resolved_address: string | null;
+    lat: number | null;
+    lon: number | null;
+    in_philadelphia?: string;
+    chosen?: string;
+  };
 }
 
-// Transit routing result from the backend (static GTFS + live SEPTA).
+// Transit routing result from the backend (static GTFS + live SEPTA), Route 21 only:
+// reachable from this stop (ok), from the opposite stop (opposite_direction), or not at all.
 // Filled while PROCESSING; carried into RECOMMENDATION for the DEV panel.
-export interface RouteEta {
-  route: string;
-  eta_minutes: number;
-  eta_source: "LIVE" | "SCHEDULED";
-  arrival_time: string;
-  trip_id: string | null;
-}
-
 export interface RouteResult {
-  status: "ok" | "opposite_direction" | "no_direct_route" | "destination_not_found" | "no_eta_available";
-  origin_stop: string;
+  status:
+    | "ok"
+    | "walk_recommended"
+    | "opposite_direction"
+    | "no_direct_route"
+    | "destination_not_found"
+    | "no_eta_available";
+  origin_stop: string; // "623" Chestnut St & 37th St (eastbound)
   origin_name?: string;
-  match_method: "place_alias" | "place_alias+geocoder" | "intersection_name" | "address_grid" | "geocode" | null;
+  route?: "21"; // the only supported route
+  // e.g. "AI recovery → place search (photon) → AI ranking", "place_alias", "intersection_name", "address_grid", "geocode"
+  match_method: string | null;
   destination_input?: {
     destination_text?: string;
     intersection_or_address?: string;
@@ -102,14 +168,29 @@ export interface RouteResult {
   current_stop_name?: string;
   recommended_stop_id?: string;
   recommended_stop_name?: string;
-  valid_routes?: string[];
-  route_etas?: RouteEta[];
-  selected_route?: string;
+  // ok only
+  selected_route?: "21";
   eta_minutes?: number;
   eta_source?: "LIVE" | "SCHEDULED";
   predicted_arrival?: string;
   selected_trip_id?: string | null;
+  // walking estimate from the origin (checked before Route 21; present on every result)
+  walking?: {
+    distance_m?: number;
+    minutes?: number;
+    walkable: boolean; // minutes ≤ threshold_min (10)
+    source: string; // "OSRM walking route (…)" or "grid estimate (…)"
+    straight_line_m?: number;
+    threshold_min?: number;
+    router_error?: string;
+  };
+  // walk_recommended only (the transit facts stay in internal state for DEV)
+  walking_minutes?: number;
+  walking_distance_m?: number;
+  destination_address?: string | null;
+  route21_if_not_walking?: { status: string; destination_stop?: string; from_stop?: string };
   live_error?: string;
+  scheduled_error?: string;
   match_errors?: string[];
 }
 
@@ -120,14 +201,15 @@ export type Routing =
 
 /**
  * Guidance instead of a route (never goes to the LED):
- *   opposite_direction — "use the other stop" (stopId/stopName = that stop)
- *   no_direct_route    — no route 9/21/42 from either stop (stop fields empty)
+ *   walk_recommended   — short walk (≤ 10 min) from here: walking is SUGGESTED, never required
+ *   opposite_direction — Route 21 goes there from the other stop (stopId/stopName = that stop)
+ *   no_direct_route    — Route 21 doesn't reach it from either stop (stop fields empty)
  */
 export interface Redirect {
-  kind: "opposite_direction" | "no_direct_route";
+  kind: "walk_recommended" | "opposite_direction" | "no_direct_route";
   stopId: string;
   stopName: string;
-  validRoutes: string[];
+  walkingMinutes?: number; // walk_recommended only
 }
 
 /** What PERSON_DETECTED is asking: the first question, a retry, or a final give-up. */
@@ -140,7 +222,7 @@ export const MAX_RETRIES = 2;
 export interface InteractionContext {
   state: InteractionState;
   transcript: string | null; // RAW SpeechRecognition transcript (kept for debugging)
-  normalizedTranscript: string | null; // after local place-name cleanup — what is sent to OpenAI
+  normalizedTranscript: string | null; // local alias cleanup — sent to OpenAI only as an optional hint
   recommendation: Recommendation | null; // what Frame 1 shows; handed to the LED on RECOMMENDATION
   redirect: Redirect | null; // RECOMMENDATION variant: guidance instead of a route (never goes to the LED)
   interpretation: Interpretation | null; // AI-normalized destination for this session
