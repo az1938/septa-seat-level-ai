@@ -7,9 +7,10 @@ import {
   type Redirect,
 } from "../state/interactionMachine";
 import { AiPanel } from "../components/AiPanel";
+import { MobileFace } from "../components/MobileFace";
 import { usePersonDetection, type PersonDetection } from "../hooks/usePersonDetection";
 import { cancelSpeech, currentVoiceLabel, installSpeechUnlock, speak } from "../lib/speech";
-import { useSpeechCapture, type SpeechCapture } from "../hooks/useSpeechCapture";
+import { useRecorderCapture, type RecorderCapture } from "../hooks/useRecorderCapture";
 import { InterpretError, interpretDestination } from "../lib/interpretApi";
 import { RouteError, recommendRoute } from "../lib/routeApi";
 import { POLL_MS, fetchInputView, postInputUpdate, type InputReport, type RiderStatus } from "../lib/sessionApi";
@@ -61,23 +62,40 @@ function recommendationSentence(route: string, eta: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// /input — the rider-facing conversational interface (iPhone on the bus-stop wall).
+// /input-mobile — rider-facing conversational interface for iPhone / iPad Safari.
 //
-// Same interaction logic as before (camera → "Where are you going?" → speech →
-// AI destination recovery → Route 21 / walking / opposite-stop decision → spoken
-// result → IDLE), but ONLY the AI panel is shown. The LED lives on /output (iPad).
-//
-//   IDLE → PERSON_DETECTED → LISTENING → PROCESSING → RECOMMENDATION → IDLE
-//
-// Sync with the other devices (shared backend session, server/session_store.py):
-//   • the backend's own endpoints record the transcript, AI result and routing
-//     result; a Route 21 recommendation assigns the LED there (→ /output);
-//   • this page reports its client-only state (state machine, camera, microphone,
-//     speech) via POST /api/session/update, so /monitor can show it;
-//   • it polls GET /api/session?view=input every 1 s only to notice the
-//     researcher's "Reset Input" (input_reset_seq changes → RESET here).
-// Returning to IDLE never clears the LED.
+// Same interaction as /input-desktop (camera → "Where are you going?" → speech →
+// AI destination recovery → walking / Route 21 / opposite-stop → spoken result →
+// IDLE) and the SAME shared backend session, with three mobile differences:
+//   • speech input: MediaRecorder records ~5 s → POST /api/transcribe (OpenAI
+//     transcription on the server) → the transcript enters the unchanged AI flow
+//     (browser SpeechRecognition is not used here);
+//   • spoken prompts never block the flow: if iOS silently blocks speech
+//     synthesis, the page continues into recording after a short check;
+//   • the pixel face is rendered by MobileFace (CSS grid, same masks).
+// While the clip uploads / is transcribed the panel shows PROCESSING.
 // ─────────────────────────────────────────────────────────────────────────────
+
+const SPEAK_CHECK_MS = 2000; // iOS: nothing speaking after this (incl. ≤1.5 s voice loading) → treat as blocked
+const SPEAK_MAX_MS = (text: string) => Math.min(14000, 2500 + text.length * 80);
+
+/** speak(), but never hangs: iOS Safari may ignore speech without firing any event. */
+async function speakSafely(text: string) {
+  const synth = typeof window !== "undefined" && "speechSynthesis" in window ? window.speechSynthesis : null;
+  let timer: number | undefined;
+  const watchdog = new Promise<"blocked" | "ended">((resolve) => {
+    const check = () => {
+      if (synth && !synth.speaking && !synth.pending) return resolve("blocked");
+      timer = window.setTimeout(() => resolve("ended"), SPEAK_MAX_MS(text) - SPEAK_CHECK_MS);
+    };
+    timer = window.setTimeout(check, SPEAK_CHECK_MS);
+  });
+  try {
+    return await Promise.race([speak(text), watchdog]);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 /** Session status for /monitor, derived from the interaction state. */
 function riderStatus(ctx: InteractionContext): RiderStatus {
@@ -123,7 +141,7 @@ function riderMessage(ctx: InteractionContext): string | null {
 function inputReport(
   ctx: InteractionContext,
   detection: PersonDetection,
-  speech: SpeechCapture,
+  rec: RecorderCapture,
   speechStatus: string,
   unlocked: boolean
 ): InputReport {
@@ -138,12 +156,16 @@ function inputReport(
     normalized_transcript: ctx.normalizedTranscript,
     speech_status: speechStatus,
     voice: currentVoiceLabel(),
-    input_mode: "desktop-speech",
-    speech_supported: speech.supported,
-    mic_status: speech.micStatus,
-    listening: speech.listening,
-    interim: speech.interim,
-    speech_error: speech.error,
+    input_mode: "mobile-recorder",
+    recorder_status: rec.recorderStatus,
+    audio_mime: rec.mime ?? undefined,
+    upload_status: rec.uploadStatus,
+    transcription: rec.transcript ?? undefined,
+    transcription_model: rec.transcriptionModel ?? undefined,
+    transcription_ms: rec.transcriptionMs ?? undefined,
+    transcription_error: rec.error,
+    mic_status: rec.micStatus,
+    listening: rec.recorderStatus === "recording",
     camera_status: detection.cameraStatus,
     model_status: detection.modelStatus,
     person_present: detection.personPresent,
@@ -164,7 +186,7 @@ const REPORT_THROTTLE_MS = 500;
 /** Larger face on the portrait phone so it stays the visual centre. */
 const PHONE_FACE = { idle: "78%", active: "46%" };
 
-export function InputPage() {
+export function InputMobilePage() {
   const [ctx, dispatch] = useReducer(interactionReducer, initialContext);
   useWakeLock();
 
@@ -218,7 +240,7 @@ export function InputPage() {
     const kind = ctx.prompt;
     setSpeechStatus(`speaking (${kind})`);
     const session = ctx.enteredAt;
-    speak(PROMPT_TEXT[kind]).then((r) => {
+    speakSafely(PROMPT_TEXT[kind]).then((r) => {
       setSpeechStatus(r === "blocked" ? "blocked — click the page once (continuing silently)" : r);
       // Prompt finished → PROMPT_FINISHED. Only for THIS entry into PERSON_DETECTED
       // (a Reset cancels speech → "cancelled" → no transition). If speech was
@@ -254,7 +276,7 @@ export function InputPage() {
       : redirectSentence(ctx.redirect!);
     const redirectKind = ctx.redirect?.kind ?? "opposite_direction";
     setSpeechStatus(isRedirect ? `speaking ${redirectKind} guidance` : "speaking recommendation");
-    speak(sentence).then((r) => {
+    speakSafely(sentence).then((r) => {
       setSpeechStatus(r === "blocked" ? "blocked — click the page once" : r);
       if (r === "cancelled" || enteredAtRef.current !== session) return;
       const wait =
@@ -270,15 +292,20 @@ export function InputPage() {
     });
   }, [ctx.state, ctx.enteredAt, ctx.recommendation, ctx.redirect]);
 
-  // LISTENING → microphone + speech recognition → SPEECH_CAPTURED(transcript).
+  // LISTENING → MediaRecorder (~5 s) → /api/transcribe → SPEECH_CAPTURED(transcript).
   // Starts once per LISTENING entry (keyed on enteredAt); aborted on leaving.
-  const speech = useSpeechCapture({
+  // Nothing usable heard → spoken retry prompt (max MAX_RETRIES per session).
+  // Mic / upload / transcription errors take the same retry path, so a field
+  // problem ends in "Please try again." → IDLE instead of a stuck screen.
+  const rec = useRecorderCapture({
     active: ctx.state === "LISTENING",
     sessionKey: ctx.enteredAt,
     onFinal: (transcript) => dispatch({ type: "SPEECH_CAPTURED", transcript }),
-    // Silence → spoken retry prompt → LISTENING again (max MAX_RETRIES per session).
     onNoSpeech: () => dispatch({ type: "RETRY_NEEDED", reason: "no_speech" }),
+    onFailed: () => dispatch({ type: "RETRY_NEEDED", reason: "no_speech" }),
   });
+  // while the clip uploads / is transcribed, show PROCESSING (still LISTENING internally)
+  const shown: InteractionContext = rec.uploading && ctx.state === "LISTENING" ? { ...ctx, state: "PROCESSING" } : ctx;
 
   // PROCESSING → AI destination interpretation (backend: POST /api/interpret-destination).
   // Runs once per PROCESSING entry; the request is aborted if the state leaves
@@ -375,9 +402,9 @@ export function InputPage() {
   }, [ctx.state, ctx.interpretation]);
 
   // ── Shared session: report this device's state (throttled, changes only) ──
-  const report = inputReport(ctx, detection, speech, speechStatus, unlocked);
-  const status = riderStatus(ctx);
-  const message = riderMessage(ctx);
+  const report = inputReport(ctx, detection, rec, speechStatus, unlocked);
+  const status = riderStatus(shown);
+  const message = riderMessage(shown);
   const payload = JSON.stringify({ input: report, status, message });
   const lastSentRef = useRef<string>("");
   const sendTimerRef = useRef<number | undefined>(undefined);
@@ -411,8 +438,8 @@ export function InputPage() {
   }, [inputView.data?.input_reset_seq]);
 
   return (
-    <main className="page-input">
-      <AiPanel ctx={ctx} faceSize={PHONE_FACE} />
+    <main className="page-input page-input-mobile">
+      <AiPanel ctx={shown} faceSize={PHONE_FACE} Face={MobileFace} />
     </main>
   );
 }

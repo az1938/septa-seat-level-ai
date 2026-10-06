@@ -52,6 +52,9 @@ INPUT_FIELDS = {
     "camera_status", "model_status", "person_present", "raw_detected", "score", "camera_error",
     "interpretation_phase", "interpretation_error", "routing_phase", "routing_error",
     "speech_unlocked", "user_agent", "viewport",
+    # which rider input page is driving the session, and /input-mobile recorder diagnostics
+    "input_mode", "recorder_status", "audio_mime", "upload_status", "transcription",
+    "transcription_error", "transcription_model", "transcription_ms",
 }
 
 _lock = threading.Lock()

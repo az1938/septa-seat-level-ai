@@ -23,10 +23,10 @@ interface AiFaceProps {
 //                       "G" = lit green (listening side-indicator override)
 //                       "." = unlit (dark gray, if inside the head)
 
-const COLS = 11;
-const ROWS = 7;
+export const COLS = 11;
+export const ROWS = 7;
 
-const HEAD_MASK = [
+export const HEAD_MASK = [
   "...XXXXX...", // row 1 — 5
   "..XXXXXXX..", // row 2 — 7
   ".XXXXXXXXX.", // row 3 — 9
@@ -41,7 +41,7 @@ const BLANK = "...........";
 // Exact pixel coordinates (R = row 1–7, C = column 1–11). Columns in each string
 // are C1…C11 left→right. "#" = mint/cyan, "G" = green (listening side-indicator
 // color override), "." = unlit (dark gray inside the head).
-const EXPRESSION_MASK: Record<FaceMood, string[]> = {
+export const EXPRESSION_MASK: Record<FaceMood, string[]> = {
   // NORMAL / IDLE — R4: C4, C8 · R5: C4, C8
   idle: [BLANK, BLANK, BLANK, "...#...#...", "...#...#...", BLANK, BLANK],
 
@@ -65,8 +65,8 @@ const EXPRESSION_MASK: Record<FaceMood, string[]> = {
 };
 
 // Colors
-const INACTIVE = "#2a2e35"; // dark gray
-const COLOR: Record<string, string> = {
+export const INACTIVE = "#2a2e35"; // dark gray
+export const COLOR: Record<string, string> = {
   "#": "var(--face)", // current mint/cyan accent
   G: "#2ee66b", // listening side-indicator green
 };

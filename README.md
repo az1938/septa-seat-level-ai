@@ -113,12 +113,22 @@ every backend start — it refuses to run if they stop matching the feed):
 | page | device | shows |
 |---|---|---|
 | `/monitor` | laptop (researcher only) | full pipeline + controls |
-| `/input` | iPhone, portrait, on the bus-stop wall | rider-facing AI panel only (face, prompts, speech) |
-| `/output` | iPad at the seat | the LED tile only |
+| `/input-desktop` | desktop / laptop Chrome | rider AI panel — browser SpeechRecognition (the original `/input`; `/input` still opens it) |
+| `/input-mobile` | iPhone / iPad Safari | rider AI panel — MediaRecorder (~5 s) → `POST /api/transcribe` → same AI flow |
+| `/output` | iPad at the seat | the LED only (full screen) |
 
-URLs — local: `http://localhost:5174/monitor` · `/input` · `/output` (or `/#/monitor` …).
+URLs — local: `http://localhost:5174/monitor` · `/input-desktop` · `/input-mobile` · `/output`.
 Deployed (GitHub Pages needs the hash form):
-`https://az1938.github.io/septa-seat-level-ai/#/monitor` · `#/input` · `#/output`.
+`https://az1938.github.io/septa-seat-level-ai/#/monitor` · `#/input-desktop` · `#/input-mobile` · `#/output`.
+Both input pages drive the SAME shared session; `/monitor` shows `INPUT MODE`
+(`desktop-speech` / `mobile-recorder`) plus, for mobile, RECORDER · AUDIO MIME ·
+UPLOAD · TRANSCRIPTION.
+
+**`POST /api/transcribe`** (multipart field `audio`) → `{"status":"ok","transcript":"…"}`
+using the server's `OPENAI_API_KEY`; model `gpt-4o-mini-transcribe`
+(`OPENAI_TRANSCRIBE_MODEL` to change; falls back to `whisper-1` if the key has no
+access). The transcript then goes through `/api/interpret-destination` exactly
+like desktop speech.
 
 **Shared session.** The backend keeps ONE in-memory rider session
 (`server/session_store.py`; single installation, no accounts):

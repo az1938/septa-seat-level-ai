@@ -44,7 +44,16 @@ export interface FaceSize {
 }
 const DEFAULT_FACE: FaceSize = { idle: "62%", active: "30%" };
 
-export function AiPanel({ ctx, faceSize = DEFAULT_FACE }: { ctx: InteractionContext; faceSize?: FaceSize }) {
+export function AiPanel({
+  ctx,
+  faceSize = DEFAULT_FACE,
+  Face = AiFace,
+}: {
+  ctx: InteractionContext;
+  faceSize?: FaceSize;
+  /** face renderer — desktop uses the SVG AiFace (default); /input-mobile passes MobileFace */
+  Face?: (props: { mood: FaceMood }) => JSX.Element;
+}) {
   const { state, recommendation } = ctx;
   const isIdle = state === "IDLE";
 
@@ -61,7 +70,7 @@ export function AiPanel({ ctx, faceSize = DEFAULT_FACE }: { ctx: InteractionCont
           animate={isIdle ? { y: [0, -6, 0] } : { y: 0 }}
           transition={isIdle ? { duration: 4, repeat: Infinity, ease: "easeInOut" } : { duration: 0.3 }}
         >
-          <AiFace mood={faceMood(ctx)} />
+          <Face mood={faceMood(ctx)} />
         </motion.div>
       </motion.div>
 

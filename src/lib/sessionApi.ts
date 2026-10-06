@@ -53,6 +53,15 @@ export interface InputReport {
   speech_unlocked?: boolean;
   user_agent?: string;
   viewport?: string;
+  // which rider input page drives the session + /input-mobile recorder diagnostics
+  input_mode?: "desktop-speech" | "mobile-recorder";
+  recorder_status?: string;
+  audio_mime?: string;
+  upload_status?: string;
+  transcription?: string;
+  transcription_model?: string;
+  transcription_ms?: number;
+  transcription_error?: string | null;
 }
 
 /** LED part — all /output needs. */

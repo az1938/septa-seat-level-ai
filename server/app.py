@@ -25,6 +25,7 @@ Run:
 import json
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -203,6 +204,77 @@ def _interpret_destination_impl():
     except (ValueError, json.JSONDecodeError, RuntimeError) as e:
         return error("bad_ai_output", f"AI did not return a structured ranking: {e}", 502)
     return jsonify(result)
+
+
+# ─── Speech-to-text for /input-mobile (iPhone Safari) ────────────────────────
+#
+# POST /api/transcribe   multipart/form-data, field "audio" (a short MediaRecorder
+# clip: audio/mp4 on iOS Safari, audio/webm in Chrome). The server-side
+# OPENAI_API_KEY is used; the key never reaches the browser.
+#   → {"status": "ok", "transcript": "...", "model": "...", "ms": 812}
+# The page then sends that transcript to /api/interpret-destination exactly like
+# the desktop speech flow (same AI recovery, verification, walking, Route 21 logic).
+
+TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
+TRANSCRIBE_FALLBACK_MODEL = "whisper-1"
+MAX_AUDIO_BYTES = 8 * 1024 * 1024  # ~6 s of audio is far smaller; reject anything huge
+TRANSCRIBE_PROMPT = (
+    "A bus rider at a stop in Philadelphia says where they want to go: a street address, "
+    "an intersection, a building, landmark, business or neighborhood."
+)
+_AUDIO_EXT = {"audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/m4a": "m4a", "audio/aac": "m4a",
+              "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav", "audio/x-wav": "wav",
+              "audio/mpeg": "mp3", "video/mp4": "mp4", "video/webm": "webm"}
+
+
+@app.post("/api/transcribe")
+def transcribe():
+    f = request.files.get("audio")
+    if f is None:
+        return error("no_audio", 'multipart field "audio" is missing', 400)
+    data = f.read(MAX_AUDIO_BYTES + 1)
+    if not data:
+        return error("empty_audio", "The audio upload is empty.", 400)
+    if len(data) > MAX_AUDIO_BYTES:
+        return error("audio_too_large", "Audio clip is too large.", 413)
+    mime = (f.mimetype or "audio/webm").split(";")[0].strip().lower()
+    filename = f"speech.{_AUDIO_EXT.get(mime, 'webm')}"
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return error("missing_api_key", "OPENAI_API_KEY is not set on the server.", 500)
+    client = OpenAI(api_key=api_key, timeout=AI_TIMEOUT_SECONDS, max_retries=1)
+
+    started = time.time()
+    model = TRANSCRIBE_MODEL
+    try:
+        try:
+            resp = client.audio.transcriptions.create(
+                model=model, file=(filename, data, mime), language="en", prompt=TRANSCRIBE_PROMPT
+            )
+        except (openai.NotFoundError, openai.PermissionDeniedError, openai.BadRequestError) as e:
+            if model == TRANSCRIBE_FALLBACK_MODEL or "model" not in str(e).lower():
+                raise
+            model = TRANSCRIBE_FALLBACK_MODEL  # e.g. the key has no access to the newer model
+            resp = client.audio.transcriptions.create(
+                model=model, file=(filename, data, mime), language="en", prompt=TRANSCRIBE_PROMPT
+            )
+    except openai.AuthenticationError:
+        return error("invalid_api_key", "The OpenAI API key was rejected (invalid or revoked).", 502)
+    except openai.RateLimitError as e:
+        if "insufficient_quota" in str(e):
+            return error("insufficient_quota", "OpenAI account has no remaining credits/quota.", 402)
+        return error("rate_limited", "Transcription rate limit hit — try again shortly.", 503)
+    except openai.APITimeoutError:
+        return error("timeout", "Transcription timed out.", 504)
+    except openai.APIConnectionError as e:
+        return error("network", f"Could not reach the transcription API: {e}", 502)
+    except openai.APIError as e:
+        return error("transcription_error", f"Transcription failed: {e}", 502)
+
+    text = (getattr(resp, "text", None) or "").strip()
+    return jsonify({"status": "ok", "transcript": text, "model": model,
+                    "ms": round((time.time() - started) * 1000), "bytes": len(data), "mime": mime})
 
 
 # ─── Transit: destination → Route 21 reachability + live ETA ────────────────

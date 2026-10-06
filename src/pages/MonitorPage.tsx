@@ -111,7 +111,8 @@ export function MonitorPage() {
 
   const inp = s?.input ?? {};
   const now = s?.now ?? Date.now() / 1000;
-  const speechUnsupported = inp.speech_supported === false;
+  const mobile = inp.input_mode === "mobile-recorder";
+  const speechUnsupported = !mobile && inp.speech_supported === false;
 
   return (
     <main className="page-monitor">
@@ -190,9 +191,11 @@ export function MonitorPage() {
         <p className="mon-empty">Waiting for the backend session…</p>
       ) : (
         <div className="mon-grid">
-          <Card title="Input device · iPhone /input">
+          <Card title={`Input device · ${mobile ? "/input-mobile" : inp.input_mode ? "/input-desktop" : "/input"}`}>
             <p className="dev-cam-status">
               CONNECTED: last report {age(now, s.input_last_update)} · last poll {age(now, s.input_last_poll)}
+              <br />
+              INPUT MODE: <On on={!!inp.input_mode}>{inp.input_mode ?? "—"}</On>
               <br />
               STATUS: <On on={s.status !== "idle"}>{s.status.toUpperCase()}</On> · STATE: {inp.state ?? "—"}
               <br />
@@ -211,7 +214,23 @@ export function MonitorPage() {
               <br />
               VOICE: {inp.voice ?? "—"}
               <br />
-              SPEECH RECOGNITION: <On on={inp.speech_supported === true}>{inp.speech_supported === false ? "UNSUPPORTED" : inp.speech_supported ? "SUPPORTED" : "—"}</On>
+              {mobile ? (
+                <>
+                  RECORDER: <On on={inp.recorder_status === "recording"}>{(inp.recorder_status ?? "—").toUpperCase()}</On>
+                  {" · "}AUDIO MIME: {inp.audio_mime ?? "—"}
+                  <br />
+                  UPLOAD: <On on={inp.upload_status === "done"}>{(inp.upload_status ?? "—").toUpperCase()}</On>
+                  <br />
+                  TRANSCRIPTION: {inp.transcription != null ? `“${inp.transcription}”` : "—"}
+                  {inp.transcription_model ? ` · ${inp.transcription_model}` : ""}
+                  {inp.transcription_ms != null ? ` · ${inp.transcription_ms} ms` : ""}
+                </>
+              ) : (
+                <>
+                  SPEECH RECOGNITION:{" "}
+                  <On on={inp.speech_supported === true}>{inp.speech_supported === false ? "UNSUPPORTED" : inp.speech_supported ? "SUPPORTED" : "—"}</On>
+                </>
+              )}
               <br />
               MICROPHONE: <On on={inp.mic_status === "granted"}>{(inp.mic_status ?? "—").toUpperCase()}</On>
               {inp.listening ? " · listening" : ""}
@@ -225,7 +244,8 @@ export function MonitorPage() {
               DEVICE: {inp.viewport ?? "—"} · {inp.user_agent ?? "—"}
             </p>
             {inp.camera_error && <p className="dev-cam-error">CAMERA: {inp.camera_error}</p>}
-            {inp.speech_error && <p className="dev-cam-error">SPEECH: {inp.speech_error}</p>}
+            {!mobile && inp.speech_error && <p className="dev-cam-error">SPEECH: {inp.speech_error}</p>}
+            {mobile && inp.transcription_error && <p className="dev-cam-error">RECORDER / TRANSCRIPTION: {inp.transcription_error}</p>}
           </Card>
 
           <Card title="Output device · iPad /output (LED)">
